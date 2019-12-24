@@ -18,7 +18,7 @@ html {
 }
 
 body {
-	background: $white;
+  background: $white;
   font: 18px/1.4 $helvetica;
   color: $darkGray;
 }
@@ -109,6 +109,31 @@ strong, b {
 img {
   max-width: 100%;
 }
+
+code {
+  font-size: .85em;
+  background-color: #f9f9f9;
+}
+
+pre code {
+  background-color: inherit;
+}
+
+td, th {
+  text-align: left;
+  padding: 0 .5em;
+}
+
+th {
+  padding-bottom: .2em;
+  border-bottom: 2px solid black;
+}
+
+td:first-child, th:first-child {
+  border-right: 1px solid black;
+  padding: 0 1em 0 0;
+}
+
 
 // Fixes images in popup boxes from Google Translate
 .gmnoprint img {
@@ -253,13 +278,14 @@ nav {
 
 .post {
   blockquote {
-    margin: 1.8em .8em;
+    font-size: .9em;
     border-left: 2px solid $gray;
-    padding: 0.1em 1em;
+    padding: 0 1em;
+    margin: 0;
     color: $gray;
-    font-size: 22px;
-    font-style: italic;
   }
+
+
 
   .comments {
     margin-top: 10px;
