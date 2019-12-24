@@ -45,7 +45,10 @@ impl<T: Copy> SeqLock<T> {
         loop {
             let seq1 = self.seq.load(Ordering::Relaxed);
             if seq1 & 1 != 0 { continue }
-            if self.seq.compare_and_swap(seq1, seq1.wrapping_add(1), Ordering::Relaxed) != seq {
+            if seq1 != self.seq.compare_and_swap(seq1,
+                                                 seq1.wrapping_add(1),
+                                                 Ordering::Relaxed)
+            {
                 continue;
             }
             unsafe { *self.data.get() = new; }
@@ -73,14 +76,15 @@ Great. So we are in somewhat uncharted territory. A thread on [Rust Internals](h
 - Never create references, because they come with the property they are dereferencable. LLVM is then allowed to insert speculative reads and writes. Always use raw pointers.
 - Never access it with a non-volatile operation, they would act as a hint to the compiler that volatile operations are not really necessary. Always use `ptr::read_volatile` and `ptr::write_volatile`.
 
-An alternative may be [atomic memcpy](https://github.com/rust-lang/rust/issues/58599), although that is not available in Rust yet and uses the somewhat questionable LLVM-specific `Unordered` atomic ordering. We'll use volatile accesses for now:
+An alternative may be [atomic memcpy](https://github.com/rust-lang/rust/issues/58599), although that is not available in Rust yet and uses the somewhat questionable LLVM-specific `Unordered` atomic ordering. We'll use volatile accesses for now because they describe our intention resonably well, and that is all that matters because we care less about the guarantees volatile should provide:
 
 ```rust
     pub fn read(&self) -> T {
         loop {
             let seq1 = self.seq.load(Ordering::Relaxed);
             if seq1 & 1 != 0 { continue }
-            let result = unsafe { ptr::read_volatile(self.data.get()) }; // CHANGED
+            let result = unsafe { ptr::read_volatile(self.data.get()) };
+            // ^-- CHANGED
             let seq2 = self.seq.load(Ordering::Relaxed);
             if seq1 == seq2 {
                 return result;
@@ -92,7 +96,10 @@ An alternative may be [atomic memcpy](https://github.com/rust-lang/rust/issues/5
         loop {
             let seq1 = self.seq.load(Ordering::Relaxed);
             if seq1 & 1 != 0 { continue }
-            if self.seq.compare_and_swap(seq1, seq1.wrapping_add(1), Ordering::Relaxed) != seq1 {
+            if seq1 != self.seq.compare_and_swap(seq1,
+                                                 seq1.wrapping_add(1),
+                                                 Ordering::Relaxed)
+            {
                 continue;
             }
             unsafe { ptr::write_volatile(self.data.get(), new); } // CHANGED
@@ -126,7 +133,10 @@ In our seqlock implementation we need to do the same: the final store in `write`
         loop {
             let seq1 = self.seq.load(Ordering::Relaxed);
             if seq1 & 1 != 0 { continue }
-            if self.seq.compare_and_swap(seq1, seq1.wrapping_add(1), Ordering::Relaxed) != seq1 {
+            if seq1 != self.seq.compare_and_swap(seq1,
+                                                 seq1.wrapping_add(1),
+                                                 Ordering::Relaxed)
+            {
                 continue;
             }
             unsafe { ptr::write_volatile(self.data.get(), new); }
@@ -161,7 +171,10 @@ Next the final store to `seq` in `write`. It must happen after the writes to `da
         loop {
             let seq1 = self.seq.load(Ordering::Relaxed);
             if seq1 & 1 != 0 { continue }
-            if self.seq.compare_and_swap(seq1, seq1.wrapping_add(1), Ordering::Acquire) != seq1 { // CHANGED
+            if seq1 != self.seq.compare_and_swap(seq1,
+                                                 seq1.wrapping_add(1),
+                                                 Ordering::Acquire) // CHANGED
+            {
                 continue;
             }
             unsafe { ptr::write_volatile(self.data.get(), new); }
@@ -179,7 +192,8 @@ Now the same for `read`. The initial `Acquire` load ensures the next reads stay 
             let seq1 = self.seq.load(Ordering::Acquire);
             if seq1 & 1 != 0 { continue }
             let result = unsafe { ptr::read_volatile(self.data.get()) };
-            let seq2 = self.seq.compare_and_swap(seq1, seq1, Ordering::Release); // CHANGED
+            let seq2 = self.seq.compare_and_swap(seq1, seq1, Ordering::Release);
+            // ^-- CHANGED
             if seq1 == seq2 {
                 return result;
             }
@@ -211,7 +225,8 @@ For seqlock the waits are expected to be short, `spin_loop_hint` is the best cho
                 continue;
             }
             let result = unsafe { ptr::read_volatile(self.data.get()) };
-            let seq2 = self.seq.compare_and_swap(seq1, seq1, Ordering::Release); // CHANGED
+            let seq2 = self.seq.compare_and_swap(seq1, seq1, Ordering::Release);
+            // ^-- CHANGED
             if seq1 == seq2 {
                 return result;
             }
@@ -225,7 +240,10 @@ For seqlock the waits are expected to be short, `spin_loop_hint` is the best cho
                 spin_loop_hint();
                 continue;
             }
-            if self.seq.compare_and_swap(seq1, seq1.wrapping_add(1), Ordering::Acquire) != seq1 { // CHANGED
+            if seq1 != self.seq.compare_and_swap(seq1,
+                                                 seq1.wrapping_add(1),
+                                                 Ordering::Acquire)
+            {
                 continue;
             }
             unsafe { ptr::write_volatile(self.data.get(), new); }
@@ -264,7 +282,7 @@ In `write` we are doing a CAS in a loop, so lets use `compare_exchange_weak`. Th
                 spin_loop_hint();
                 continue;
             }
-            if let Err(x) = self.seq.compare_exchange_weak(seq,
+            if let Err(x) = self.seq.compare_exchange_weak(seq1,
                                                            seq1.wrapping_add(1),
                                                            Ordering::Acquire,
                                                            Ordering::Relaxed)
@@ -309,10 +327,10 @@ x86 is not included, because we know it would even function without the barrier 
 Okay, then let's use `fence(Ordering::Acquire)`, add a big comment about which compiler version we tested to work, and make it only compile for the processors we verified.
 
 ```rust
-    // IMPORTANT: Our use of a fence is not correct according to the C++ memory model, because it is
-    // not preceded by an atomic load.
-    // For the following processors it generates the correct assembly, i.e. inserts a load barrier,
-    // with Rust version 1.39; 2019-12-23.
+    // IMPORTANT: Our use of a fence is not correct according to the C++ memory
+    // model, because it is not preceded by an atomic load.
+    // For the following processors it generates the correct assembly, i.e.
+    // inserts a load barrier, with Rust version 1.39; 2019-12-23.
     #[cfg(any(target_arch="x86", target_arch="x86_64",
               target_arch="arm", target_arch="armv7",
               target_arch="aarch64",
@@ -358,10 +376,10 @@ impl<T: Copy> SeqLock<T> {
         }
     }
 
-    // IMPORTANT: Our use of a fence is not correct according to the C++ memory model, because it is
-    // not preceded by an atomic load.
-    // For the following processors it generates the correct assembly, i.e. inserts a load barrier,
-    // with Rust version 1.39; 2019-12-23.
+    // IMPORTANT: Our use of a fence is not correct according to the C++ memory
+    // model, because it is not preceded by an atomic load.
+    // For the following processors it generates the correct assembly, i.e.
+    // inserts a load barrier, with Rust version 1.39; 2019-12-23.
     #[cfg(any(target_arch="x86", target_arch="x86_64",
               target_arch="arm", target_arch="armv7",
               target_arch="aarch64",
@@ -390,7 +408,7 @@ impl<T: Copy> SeqLock<T> {
                 spin_loop_hint();
                 continue;
             }
-            if let Err(x) = self.seq.compare_exchange_weak(seq,
+            if let Err(x) = self.seq.compare_exchange_weak(seq1,
                                                            seq1.wrapping_add(1),
                                                            Ordering::Acquire,
                                                            Ordering::Relaxed)
@@ -407,4 +425,4 @@ impl<T: Copy> SeqLock<T> {
 
 ```
 
-I probably made plenty of mistakes. But this exploring is fun. I love to read the educational deep-dive posts about Rust (There seemed to be more of those around the Rust 1.0 time), and wished there were more about writing unsafe code and concurrency. This is my small contributen. Please comment on whatever can be improved here!
+I probably made plenty of mistakes. But this exploring is fun. I love to read the educational deep-dive posts about Rust (there seemed to be more of those around the Rust 1.0 time), and wished there were more about writing unsafe code and concurrency. This is my small contribution. Please comment on whatever can be improved!
