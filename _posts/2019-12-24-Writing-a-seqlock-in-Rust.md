@@ -5,6 +5,8 @@ title: Writing a seqlock in Rust
 
 A seqlock — or "sequence lock" — is an optimized implementation of a reader-writer lock. In a seqlock "the data can be 'protected' by a sequence number. The sequence number starts at zero, and is incremented before and after writing the object. Each reader checks the sequence number before and after reading. If both values are the same and even, then there cannot have been any concurrent increments, and the reader must have seen consistent data."
 
+<!--more-->
+
 ## Initial implementation
 
 Let's start with a skeleton of the implementation. This version has multiple problems and room for improvements, which we are going to explore next.

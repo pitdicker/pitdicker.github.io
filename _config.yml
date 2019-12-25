@@ -15,6 +15,8 @@ avatar: https://avatars1.githubusercontent.com/u/6255050?s=460&v=4
 # Flags below are optional
 #
 
+excerpt_separator: <!--more-->
+
 # Includes an icon in the footer for each username you enter
 footer-links:
   dribbble:
