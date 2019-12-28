@@ -7,6 +7,8 @@ A seqlock — or "sequence lock" — is an optimized implementation of a reader-
 
 <!--more-->
 
+*NOTE: A seqlock is based on a what can be called a data race. It is currently impossible to write in Rust without Undefined Behavior. This post tries anyway, to see where we hit our head ;-).*
+
 ## Initial implementation
 
 Let's start with a skeleton of the implementation. This version has multiple problems and room for improvements, which we are going to explore next.
@@ -73,6 +75,10 @@ The reads from `data` are sandwiched between two atomic accesses, and so are wri
 
 The documentation of [`ptr::read_volatile`](https://doc.rust-lang.org/std/ptr/fn.read_volatile.html) and [`ptr::write_volatile`](https://doc.rust-lang.org/std/ptr/fn.read_volatile.html) comes with the warning:
 > Rust does not currently have a rigorously and formally defined memory model, so the precise semantics of what "volatile" means here is subject to change over time. That being said, the semantics will almost always end up pretty similar to C11's definition of volatile.
+>
+> …
+>
+> Just like in C, whether an operation is volatile has no bearing whatsoever on questions involving concurrent access from multiple threads. Volatile accesses behave exactly like non-atomic accesses in that regard. In particular, a race between a `read_volatile` and any write operation to the same location is undefined behavior.
 
 Great. So we are in somewhat uncharted territory. A thread on [Rust Internals](https://internals.rust-lang.org/t/volatile-and-sensitive-memory) and one in the [unsafe-code-guidelines](https://github.com/rust-lang/unsafe-code-guidelines/issues/33) have some discussion on how to use volatile correctly. Basically it only make sense when used with memory-mapped IO. Some of the things we seem to have to keep in mind:
 - Never create references, because they come with the property they are dereferencable. LLVM is then allowed to insert speculative reads and writes. Always use raw pointers.
@@ -193,6 +199,7 @@ Now the same for `read`. The initial `Acquire` load ensures the next reads stay 
         loop {
             let seq1 = self.seq.load(Ordering::Acquire);
             if seq1 & 1 != 0 { continue }
+            // A volatile read is the best we can do, but still UB.
             let result = unsafe { ptr::read_volatile(self.data.get()) };
             let seq2 = self.seq.compare_and_swap(seq1, seq1, Ordering::Release);
             // ^-- CHANGED
@@ -226,6 +233,7 @@ For seqlock the waits are expected to be short, `spin_loop_hint` is the best cho
                 spin_loop_hint();
                 continue;
             }
+            // A volatile read is the best we can do, but still UB.
             let result = unsafe { ptr::read_volatile(self.data.get()) };
             let seq2 = self.seq.compare_and_swap(seq1, seq1, Ordering::Release);
             // ^-- CHANGED
@@ -282,6 +290,7 @@ In `write` we are doing a CAS in a loop, so lets use `compare_exchange_weak`. Th
         loop {
             if seq1 & 1 != 0 {
                 spin_loop_hint();
+                seq1 = self.seq.load(Ordering::Relaxed);
                 continue;
             }
             if let Err(x) = self.seq.compare_exchange_weak(seq1,
@@ -313,7 +322,7 @@ On ARM and AARCH-64 we would need a `dmb` instruction, a _data memory barrier_. 
 
 On Power architectures we need an `lwsync` instruction. A _light-weight sync_ is restricted to system memory (instead of also forming a barrier with device memory, something we don't need). It seems to not yet be exposed as an intrinsic in the standard library.
 
-I am not sure wat the status is with barriers and MIPS.
+I am not sure what the status is with barriers and MIPS.
 
 Again we are stuck without a great solution. The intrinsics we need are not available, or nightly-only. But now that we know what we need, what does a lonely `fence(Ordering::Acquire)` compile down to? It would not be correct, but we are going the route of architecture-specific code now. If it generates the code we need, that is ok for now. Let's test:
 
@@ -345,6 +354,7 @@ Okay, then let's use `fence(Ordering::Acquire)`, add a big comment about which c
                 spin_loop_hint();
                 continue;
             }
+            // A volatile read is the best we can do, but still UB.
             let result = unsafe { ptr::read_volatile(self.data.get()) };
             fence(Ordering::Acquire);
             let seq2 = self.seq.load(Ordering::Relaxed);
@@ -394,6 +404,7 @@ impl<T: Copy> SeqLock<T> {
                 spin_loop_hint();
                 continue;
             }
+            // A volatile read is the best we can do, but still UB.
             let result = unsafe { ptr::read_volatile(self.data.get()) };
             fence(Ordering::Acquire);
             let seq2 = self.seq.load(Ordering::Relaxed);
@@ -408,6 +419,7 @@ impl<T: Copy> SeqLock<T> {
         loop {
             if seq1 & 1 != 0 {
                 spin_loop_hint();
+                seq1 = self.seq.load(Ordering::Relaxed);
                 continue;
             }
             if let Err(x) = self.seq.compare_exchange_weak(seq1,
