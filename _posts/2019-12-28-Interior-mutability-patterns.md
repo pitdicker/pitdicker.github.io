@@ -170,7 +170,7 @@ impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> { /* ... */ }
 
 /* optional */
 impl<T: ?Sized> RwLockWriteGuard<T> {
-    pub fn downgrade(&self) -> RwLockReadGuard<T>
+    pub fn downgrade(self) -> RwLockReadGuard<T>
 }
 ```
 
@@ -276,14 +276,14 @@ impl QCellOwner {
     pub fn rw<'a, T>(&'a mut self, qc: &'a QCell<T>) -> &'a mut T
     pub fn rw2<'a, T, U>(
         &'a mut self,
-        tc1: &'a TCell<Q, T>,
-        tc2: &'a TCell<Q, U>
+        qc1: &'a QCell<T>,
+        qc2: &'a QCell<U>
     ) -> (&'a mut T, &'a mut U)
     pub fn rw3<'a, T, U, V>(
         &'a mut self,
-        tc1: &'a TCell<Q, T>,
-        tc2: &'a TCell<Q, U>,
-        tc3: &'a TCell<Q, V>
+        qc1: &'a QCell<T>,
+        qc2: &'a QCell<U>,
+        qc3: &'a QCell<V>
     ) -> (&'a mut T, &'a mut U, &'a mut V)
 }
 
