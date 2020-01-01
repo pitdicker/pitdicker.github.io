@@ -18,7 +18,7 @@ Yet there are some creative methods that push the limit of those abstractions. L
 | `update`            | yes     | —        | —            | yes        | —       | —        | —          | —*      | —*      | —*
 | `Ref::map`          | —       | —        | —            | yes        | yes*    | yes*     | —          | —       | —       | —
 | `Ref::map_split`    | —       | —        | —            | yes        | yes*    | yes*     | —          | —       | —       | —
-| `as_slice_of_cells` | yes     | —        | —            |  —         | —       | —        | —          | —       | —       | —
+| `as_slice_of_cells` | yes     | —        | —            | —          | —       | —        | —          | —       | yes*    | yes*
 
 _¹: In this post I use `Atomic<T>` to describe a wrapper based on atomic operations, and `AtomicCell<T>` to describe a lock-based solution for larger types._
 
@@ -202,9 +202,11 @@ impl<T> Cell<[T]> {
 }
 ```
 
-Are there any other internal mutability types that can follow this trick? The type has to support the same operation as `from_mut`, and it should not hand out regular references. That narrows it down to `Cell` and `AtomicCell`.
+Are there any other internal mutability types that can follow this trick? The type has to support the same operation as `from_mut`, and it should not hand out a regular mutable reference from the parent cell and from the inner cell at the same time (`Cell` never hands out any, so that is easy).
 
-`AtomicCell` uses the address of the wrapped value to synchronize accesses to it with other threads. Even if we take a reference to something inside it and wrap it in an `AtomicCell` again, the address will not be the same. So I don't think it is something that can be supported.
+`AtomicCell` also doesn't hand out references, but uses the address of the wrapped value to synchronize accesses with other threads. Even if we take a reference to something inside it and wrap it in an `AtomicCell` again, the address will not be the same. So I don't think it is something that can be supported.
+
+`TCell` and `LCell` could implement `from_mut`, and can also ensure there a mutable reference is unique. The owner ensures either all references are shared, or that there is only one mutable reference. Multiple mutable references can be created with [`LCellOwner::{rw2, rw3}`](https://docs.rs/qcell/0.4.0/qcell/struct.LCellOwner.html#method.rw2), but those methods check at runtime the adresses are different, and can be extended to check the addresses don't fall within the size of one of the values.
 
 
 ## Any other creativity?
