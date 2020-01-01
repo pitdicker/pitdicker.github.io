@@ -193,8 +193,9 @@ That brings us to a few safe conversions:
 - tuples: `&Cell<(A, B)>` → `&(Cell<A>, Cell<B>)`
 - arrays: `&Cell<[A; N]>` → `&[Cell<A>; N]`
 - slices: `&Cell<[A]>` → `&[Cell<A>]`
+- structs: `&Cell<struct>` → `&Cell<field>` (if the field is not private)
 
-Only the last one is currently implemented, with [`Cell::as_slice_of_cells`](https://doc.rust-lang.org/std/cell/struct.Cell.html#method.as_slice_of_cells):
+Only the conversion of slices is currently implemented, with [`Cell::as_slice_of_cells`](https://doc.rust-lang.org/std/cell/struct.Cell.html#method.as_slice_of_cells):
 ```rust
 impl<T> Cell<[T]> {
     pub fn as_slice_of_cells(&self) -> &[Cell<T>]
