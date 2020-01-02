@@ -19,6 +19,7 @@ Yet there are some creative methods that push the limit of those abstractions. L
 | `Ref::map`          | —       | —        | —            | yes        | yes*    | yes*     | —          | —       | —       | —
 | `Ref::map_split`    | —       | —        | —            | yes        | yes*    | yes*     | —          | —       | —       | —
 | `as_slice_of_cells` | yes     | —        | —            | —          | —       | —        | —          | —       | yes*    | yes*
+| `RefMut::downgrade` | —       | —        | —            | —          | —       | yes*     | —          | —       | —       | —
 
 _¹: In this post I use `Atomic<T>` to describe a wrapper based on atomic operations, and `AtomicCell<T>` to describe a lock-based solution for larger types._
 
@@ -33,6 +34,7 @@ We could place these methods in six categories:
 - [Updating a value (single-threaded wrappers only)](#updating-a-value-single-threaded-wrappers-only)
 - [Refining smart pointers](#refining-smart-pointers)
 - [References in `Cell` if the structure is 'flat'](#references-in-cell-if-the-structure-is-flat)
+- [Downgrading a mutable smart pointer](#downgrading-a-mutable-smart-pointer)
 
 ## Bypass conventions if you have exclusive access
 
@@ -208,6 +210,31 @@ Are there any other internal mutability types that can follow this trick? The ty
 
 `TCell` and `LCell` could implement `from_mut`, and can also ensure there a mutable reference is unique. The owner ensures either all references are shared, or that there is only one mutable reference. Multiple mutable references can be created with [`LCellOwner::{rw2, rw3}`](https://docs.rs/qcell/0.4.0/qcell/struct.LCellOwner.html#method.rw2), but those methods check at runtime the adresses are different, and can be extended to check the addresses don't fall within the size of one of the values.
 
+## Downgrading a mutable smart pointer
+Basic API:
+```rust
+impl<'b, T: ?Sized> RefMut<'b, T> {
+    pub fn downgrade(orig: RefMut<'b, T>) -> Ref<'b, T>
+}
+```
+
+`RwLockWriteGuard` in `parking_lot` has a [`downgrade`](https://docs.rs/lock_api/0.3/lock_api/struct.RwLockWriteGuard.html#method.downgrade) method which turns it into a `RwLockReadGuard`. It is instructive to explore why `RefCell`s `RefMut` can't provide a similar method to turn it into a `Ref`.
+
+The signature of the closure used in `RefMut::map` is `FnOnce(&mut T) -> &mut U`. This gives it an interesting property: it allows you to [bypass conventions](#bypass-conventions-if-you-have-exclusive-access) of wrapped interior mutability types because you have exclusive access.
+
+Because `RefMut::map` made the promise to wrapped types that its reference is unique, the returned `RefMut` has to remain unique. It can't be turned into a `Ref`, of which multiple can exist. Example of how it can go wrong:
+```rust
+let refcell = RefCell::new(Cell::new(10u32));
+let ref_mut = refcell.borrow_mut();
+RefMut::map(ref_mut, |x| x.get_mut());
+let ref1 = RefMut::downgrade(ref_mut);
+let cell_ref = &*ref1;
+let ref2 = refcell.borrow();
+// We can now mutate the `Cell` through `ref2` while there also exists a
+// reference to its interior.
+```
+
+For `RwLockWriteGuard` however `downgrade` is sound, because it's `map` method returns another type. But that returned type, `MappedRwLockWriteGuard`, now has to remain unique, so [`MappedRwLockWriteGuard::downgrade`](https://docs.rs/lock_api/0.3/lock_api/struct.MappedRwLockWriteGuard.html#method.downgrade) is unsound.
 
 ## Any other creativity?
 
@@ -216,3 +243,7 @@ Appearently rustaceans really like to push the boundaries, to explore the limits
 I can't think of any other directions, but I am sure this list will grow outdated at some point ;-).
 
 Do you know of any other creative methods on interior mutability types?
+
+### Revision history
+- 2020-01-02: added 'Downgrading a mutable smart pointer'
+- 2020-01-01: `TCell` and `LCell` can also support `as_slice_of_cells`
