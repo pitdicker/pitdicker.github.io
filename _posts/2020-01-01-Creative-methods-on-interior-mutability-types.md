@@ -16,12 +16,12 @@ Yet there are some creative methods that push the limit of those abstractions. L
 | `replace`           | yes     | yes      | yes          | yes        | —       | —        | —          | yes*    | yes*    | yes*
 | `swap`              | yes     | yes      | yes          | yes        | —       | —        | —          | —       | —       | —
 | `update`            | yes     | —        | —            | yes        | —       | —        | —          | —*      | —*      | —*
+| `as_slice_of_cells` | yes     | —        | —            | —          | —       | —        | —          | —       | yes*    | yes*
 | `Ref::bump`         | —       | —        | —            | —          | yes*    | yes*     | —          | —       | —       | —
 | `Ref::unlocked`     | —       | —        | —            | —          | yes*    | yes*     | —          | —       | —       | —
 | `Condvar::wait`     | —       | —        | —            | —          | yes     | yes*     | —          | —       | —       | —
 | `Ref::map`          | —       | —        | —            | yes        | yes*    | yes*     | —          | —       | —       | —
 | `Ref::map_split`    | —       | —        | —            | yes        | yes*    | yes*     | —          | —       | —       | —
-| `as_slice_of_cells` | yes     | —        | —            | —          | —       | —        | —          | —       | yes*    | yes*
 | `RefMut::downgrade` | —       | —        | —            | —          | —       | yes*     | —          | —       | —       | —
 
 _¹: In this post I use `Atomic<T>` to describe a wrapper based on atomic operations, and `AtomicCell<T>` to describe a lock-based solution for larger types._
@@ -35,9 +35,9 @@ We could place these methods in 8 categories:
 - [Temporary wrap a value to provide interior mutability](#temporary-wrap-a-value-to-provide-interior-mutability)
 - [`mem::replace`, but for interior mutability](#memreplace-but-for-interior-mutability)
 - [Updating a value (single-threaded wrappers only)](#updating-a-value-single-threaded-wrappers-only)
+- [References in `Cell` if the structure is 'flat'](#references-in-cell-if-the-structure-is-flat)
 - [Temporary lending out a mutable reference to another thread](#temporary-lending-out-a-mutable-reference-to-another-thread)
 - [Refining smart pointers](#refining-smart-pointers)
-- [References in `Cell` if the structure is 'flat'](#references-in-cell-if-the-structure-is-flat)
 - [Downgrading a mutable smart pointer](#downgrading-a-mutable-smart-pointer)
 
 ## Bypass conventions if you have exclusive access
@@ -138,6 +138,33 @@ For synchronization primitives something like `RefCell::replace_with` is also no
 
 For `OnceCell` it doesn't make sense to update the value, because the only time its value can be mutated is while it is uninitialized. An alternative could be [`OnceFlipCell`](https://github.com/matklad/rfcs/blob/std-lazy/text/0000-standard-lazy-types.md#why-oncecell-as-a-primitive), which comes with an initial state that can be flipped to a usable state. But I really don't see much use for such a type.
 
+## References in `Cell` if the structure is 'flat'
+
+The basic convention that makes `Cell` safe is to never hand out references to its wrapped value. It turns out here is a case where taking a reference to inside the cell doesn't violate its soundness. That would be really useful for larger types, as it allows you to read or write only part of the value.
+
+Let's call the structure of a value 'flat' (see [this comment](https://github.com/rust-lang/rfcs/pull/1789#issuecomment-260209527)) if the references don't go under indirections (`Box` or other wrapper types) or branches (`enum`s). Then a write to `Cell` can't change the structure, there is only one possible structure. A write to the entire `cell` will mutate the contents, but it can never switch a part to which we hold a reference to another enum variant, deallocate the referenced memory, or otherwise make the inner reference invalid.
+
+We do have to make sure the inner references also follow the same conventions for interior mutability, meaning we have also have to wrap them in `Cell`s. Just like [temporary wrapping a value to provide interior mutability](#temporary-wrap-a-value-to-provide-interior-mutability).
+
+That brings us to a few safe conversions:
+- tuples: `&Cell<(A, B)>` → `&(Cell<A>, Cell<B>)`
+- arrays: `&Cell<[A; N]>` → `&[Cell<A>; N]`
+- slices: `&Cell<[A]>` → `&[Cell<A>]`
+- structs: `&Cell<struct>` → `&Cell<field>` (if the field is not private)
+
+Only the conversion of slices is currently implemented, with [`Cell::as_slice_of_cells`](https://doc.rust-lang.org/std/cell/struct.Cell.html#method.as_slice_of_cells):
+```rust
+impl<T> Cell<[T]> {
+    pub fn as_slice_of_cells(&self) -> &[Cell<T>]
+}
+```
+
+Are there any other internal mutability types that can follow this trick? The type has to support the same operation as `from_mut`, and it should not hand out a regular mutable reference from the parent cell and from the inner cell at the same time (`Cell` never hands out any, so that is easy).
+
+`AtomicCell` also doesn't hand out references, but uses the address of the wrapped value to synchronize accesses with other threads. Even if we take a reference to something inside it and wrap it in an `AtomicCell` again, the address will not be the same. So I don't think it is something that can be supported.
+
+`TCell` and `LCell` could implement `from_mut`, and can also ensure there a mutable reference is unique. The owner ensures either all references are shared, or that there is only one mutable reference. Multiple mutable references can be created with [`LCellOwner::{rw2, rw3}`](https://docs.rs/qcell/0.4.0/qcell/struct.LCellOwner.html#method.rw2), but those methods check at runtime the adresses are different, and can be extended to check the addresses don't fall within the size of one of the values.
+
 ## Temporary lending out a mutable reference to another thread
 Simplified API:
 ```rust
@@ -221,33 +248,6 @@ While `Ref::map` is nice, `RefMut::map_split` is where it gets really interestin
 Just like `map`, `map_split` is not implemented for `Mutex` and `RwLock` in the standard library. `parking_lot` also doesn't support `map_split` yet. And because the concept of multiple mutable references goes pretty deep, that may take a long time, if ever, to be supported.
 
 Note that all these methods on smart pointers don't take `self` as argument, but are associated methods instead. A normal method would interfere with methods of the same name on the contents of a `RefCell` used through `Deref`.
-
-## References in `Cell` if the structure is 'flat'
-
-The basic convention that makes `Cell` safe is to never hand out references to its wrapped value. It turns out here is a case where taking a reference to inside the cell doesn't violate its soundness. That would be really useful for larger types, as it allows you to read or write only part of the value.
-
-Let's call the structure of a value 'flat' (see [this comment](https://github.com/rust-lang/rfcs/pull/1789#issuecomment-260209527)) if the references don't go under indirections (`Box` or other wrapper types) or branches (`enum`s). Then a write to `Cell` can't change the structure, there is only one possible structure. A write to the entire `cell` will mutate the contents, but it can never switch a part to which we hold a reference to another enum variant, deallocate the referenced memory, or otherwise make the inner reference invalid.
-
-We do have to make sure the inner references also follow the same conventions for interior mutability, meaning we have also have to wrap them in `Cell`s. Just like [temporary wrapping a value to provide interior mutability](#temporary-wrap-a-value-to-provide-interior-mutability).
-
-That brings us to a few safe conversions:
-- tuples: `&Cell<(A, B)>` → `&(Cell<A>, Cell<B>)`
-- arrays: `&Cell<[A; N]>` → `&[Cell<A>; N]`
-- slices: `&Cell<[A]>` → `&[Cell<A>]`
-- structs: `&Cell<struct>` → `&Cell<field>` (if the field is not private)
-
-Only the conversion of slices is currently implemented, with [`Cell::as_slice_of_cells`](https://doc.rust-lang.org/std/cell/struct.Cell.html#method.as_slice_of_cells):
-```rust
-impl<T> Cell<[T]> {
-    pub fn as_slice_of_cells(&self) -> &[Cell<T>]
-}
-```
-
-Are there any other internal mutability types that can follow this trick? The type has to support the same operation as `from_mut`, and it should not hand out a regular mutable reference from the parent cell and from the inner cell at the same time (`Cell` never hands out any, so that is easy).
-
-`AtomicCell` also doesn't hand out references, but uses the address of the wrapped value to synchronize accesses with other threads. Even if we take a reference to something inside it and wrap it in an `AtomicCell` again, the address will not be the same. So I don't think it is something that can be supported.
-
-`TCell` and `LCell` could implement `from_mut`, and can also ensure there a mutable reference is unique. The owner ensures either all references are shared, or that there is only one mutable reference. Multiple mutable references can be created with [`LCellOwner::{rw2, rw3}`](https://docs.rs/qcell/0.4.0/qcell/struct.LCellOwner.html#method.rw2), but those methods check at runtime the adresses are different, and can be extended to check the addresses don't fall within the size of one of the values.
 
 ## Downgrading a mutable smart pointer
 Basic API:
