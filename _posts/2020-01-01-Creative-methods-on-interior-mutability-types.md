@@ -30,6 +30,7 @@ On smart pointers:
 | `map`           | yes    | yes      | yes*         | yes*              | yes*               | yes
 | `map_split`     | yes    | yes      | yes*         | yes*              | yes*               | yes*
 | `downgrade`     | —      | —        | —            | —                 | yes*               | —
+| `upgrade`       | yes*   | —        | —            | maybe             | —                  | —
 
 
 _¹: In this post I use `Atomic<T>` to describe a wrapper based on atomic operations, and `AtomicCell<T>` to describe a lock-based solution for larger types._
@@ -46,7 +47,7 @@ We could place these methods in 8 categories:
 - [References in `Cell` if the structure is 'flat'](#references-in-cell-if-the-structure-is-flat)
 - [Temporary lending out a mutable reference to another thread](#temporary-lending-out-a-mutable-reference-to-another-thread)
 - [Refining smart pointers](#refining-smart-pointers)
-- [Downgrading a mutable smart pointer](#downgrading-a-mutable-smart-pointer)
+- [Downgrading or upgrading a smart pointer](#downgrading-or-upgrading-a-smart-pointer)
 
 ## Bypass conventions if you have exclusive access
 
@@ -257,13 +258,19 @@ Just like `map`, `map_split` is not implemented for `Mutex` and `RwLock` in the 
 
 Note that all these methods on smart pointers don't take `self` as argument, but are associated methods instead. A normal method would interfere with methods of the same name on the contents of a `RefCell` used through `Deref`.
 
-## Downgrading a mutable smart pointer
+## Downgrading or upgrading a smart pointer
 Basic API:
 ```rust
 impl<'b, T: ?Sized> RefMut<'b, T> {
     pub fn downgrade(orig: RefMut<'b, T>) -> Ref<'b, T>
 }
+
+impl<'b, T: ?Sized> Ref<'b, T> {
+    pub fn upgrade(orig: Ref<'b, T>) -> RefMut<'b, T>
+}
 ```
+
+### Downgrade
 
 `RwLockWriteGuard` in `parking_lot` has a [`downgrade`](https://docs.rs/lock_api/0.3/lock_api/struct.RwLockWriteGuard.html#method.downgrade) method which turns it into a `RwLockReadGuard`. It is instructive to explore why `RefCell`s `RefMut` can't provide a similar method to turn it into a `Ref`.
 
@@ -283,6 +290,41 @@ let ref2 = refcell.borrow();
 
 For `RwLockWriteGuard` however `downgrade` is sound, because it's `map` method returns another type. But that returned type, `MappedRwLockWriteGuard`, now has to remain unique, so [`MappedRwLockWriteGuard::downgrade`](https://docs.rs/lock_api/0.3/lock_api/struct.MappedRwLockWriteGuard.html#method.downgrade) is unsound.
 
+### Upgrade
+
+For `RefCell` a `Ref::upgrade` method can be simple. `Ref::map` can't traverse into wrapped interior mutability types because it doesn't guarantee unique access, so we don't have to problem `RefMut::downgrade` has. And if there are multiple shared references to the interior of the `RefCell` when upgrading, the convention is to panic. But there doesn't really seem to be an advantage to warrant an `upgrade` method.
+
+For `RwLock` an `RwLockReadGuard::upgrade` method can be useful, as it allows starting an operation without blocking other threads from reading, and only upgrading to a writer lock when necessary. If other threads hold read locks, `upgrade` will have to block until they are done (just as when acquiring a write lock). And if the current thread holds more than one reader lock, it will deadlock.
+
+The problem is: what happens if two reader locks attempt to upgrade at the same time? As both hold on to their current lock and wait until there is only one active lock, they deadlock. And contrary to other deadlocks wich can be considered programmer errors, this one may be unavoidable.
+
+Two possible solutions:
+- `upgrade` must be fallible, where one reader releases its read lock when `upgrade` fails, so the other can succeed.
+- Establish before the upgrade moment that a reader is upgradable, and allow only one upgradable reader.
+
+`parking_lot` has an [`RwLockUpgradableReadGuard`](https://docs.rs/lock_api/0.3.2/lock_api/struct.RwLockUpgradableReadGuard.html), the second option. It can probably become the best solution, but it currently misses a number of nice conversions such as deriving it from a normal read lock, or working with mapped smart pointers.
+
+### Combined with waiting on a condition variable
+
+Basic API:
+```rust
+impl<'mutex, T: ?Sized> SharedMutexReadGuard<'mutex, T> {
+    pub fn wait_for_write(self, cond: &Condvar)
+        -> LockResult<SharedMutexWriteGuard<'mutex, T>>
+    pub fn wait_for_read(self, cond: &Condvar) -> LockResult<Self>
+}
+
+impl<'mutex, T: ?Sized> SharedMutexWriteGuard<'mutex, T> {
+    pub fn wait_for_write(self, cond: &Condvar) -> LockResult<Self>
+    pub fn wait_for_read(self, cond: &Condvar)
+        -> LockResult<SharedMutexReadGuard<'mutex, T>>
+}
+```
+
+In the part on [condition variables](#condition-variables) we have seen waiting on those is an operation that ensures the smart pointer is unique. And when waiting the threads temporary give up their lock on the RW lock. That makes this a safe moment to convert a read lock to a write lock.
+
+The [`SharedMutex`](https://docs.rs/shared-mutex/0.3/shared_mutex/struct.SharedMutex.html) RW lock implementation provides such combinations. `SharedMutexReadGuard::wait_for_write` will upgrade the lock after waiting, and `SharedMutexWriteGuard::wait_for_read` will downgrade it.
+
 ## Any other creativity?
 
 Appearently rustaceans really like to push the boundaries, to explore the limits of what keeps these interior mutability conventions sound.
@@ -292,6 +334,7 @@ I can't think of any other directions, but I am sure this list will grow outdate
 Do you know of any other creative methods on interior mutability types?
 
 ### Revision history
+- 2020-01-04: added `Ref::upgrade`
 - 2020-01-03: added 'Temporary lending out a mutable reference to another thread'
 - 2020-01-02: added 'Downgrading a mutable smart pointer'
 - 2020-01-01: `TCell` and `LCell` can also support `as_slice_of_cells`
