@@ -7,6 +7,8 @@ In the previous post [Interior mutability patterns](../Interior-mutability-patte
 
 Yet there are some creative methods that push the limit of those abstractions. Let's explore them!
 
+On container types:
+
 | method              |  `Cell` | `Atomic`¹| `AtomicCell`¹| `RefCell`  | `Mutex` | `RwLock` | `OnceCell` | `QCell` | `TCell` | `LCell`
 |---------------------|---------|----------|--------------|------------|---------|----------|------------|---------|---------|--------
 | `into_inner`        | yes     | yes      | yes          | yes        | yes     | yes      | yes        | yes*    | yes*    | yes*
@@ -17,12 +19,18 @@ Yet there are some creative methods that push the limit of those abstractions. L
 | `swap`              | yes     | yes      | yes          | yes        | —       | —        | —          | —       | —       | —
 | `update`            | yes     | —        | —            | yes        | —       | —        | —          | —*      | —*      | —*
 | `as_slice_of_cells` | yes     | —        | —            | —          | —       | —        | —          | —       | yes*    | yes*
-| `Ref::bump`         | —       | —        | —            | —          | yes*    | yes*     | —          | —       | —       | —
-| `Ref::unlocked`     | —       | —        | —            | —          | yes*    | yes*     | —          | —       | —       | —
-| `Condvar::wait`     | —       | —        | —            | —          | yes     | yes*     | —          | —       | —       | —
-| `Ref::map`          | —       | —        | —            | yes        | yes*    | yes*     | —          | —       | —       | —
-| `Ref::map_split`    | —       | —        | —            | yes        | yes*    | yes*     | —          | —       | —       | —
-| `RefMut::downgrade` | —       | —        | —            | —          | —       | yes*     | —          | —       | —       | —
+
+On smart pointers:
+
+| method          | `Ref`  | `RefMut` | `MutexGuard` | `RwLockReadGuard` | `RwLockWriteGuard` | `ReentrantMutexGuard`
+|-----------------|--------|----------|--------------|-------------------|--------------------|----------------------
+| `bump`          | —      | —        | yes*         | yes*              | yes*               | yes
+| `unlocked`      | —      | —        | yes*         | yes*              | yes*               | yes
+| `Condvar::wait` | —      | —        | yes          | yes*              | yes*               | yes*
+| `map`           | yes    | yes      | yes*         | yes*              | yes*               | yes
+| `map_split`     | yes    | yes      | yes*         | yes*              | yes*               | yes*
+| `downgrade`     | —      | —        | —            | —                 | yes*               | —
+
 
 _¹: In this post I use `Atomic<T>` to describe a wrapper based on atomic operations, and `AtomicCell<T>` to describe a lock-based solution for larger types._
 
