@@ -26,11 +26,11 @@ Yet there are some creative methods that push the limit of those abstractions. L
 
 _¹: In this post I use `Atomic<T>` to describe a wrapper based on atomic operations, and `AtomicCell<T>` to describe a lock-based solution for larger types._
 
-_*: possible, but not implemented (yet)_
+_*: possible, but not implemented (or not implemented in the standard library or main crate)_
 
 <!--more-->
 
-We could place these methods in six categories:
+We could place these methods in 8 categories:
 - [Bypass conventions if you have exclusive access](#bypass-conventions-if-you-have-exclusive-access)
 - [Temporary wrap a value to provide interior mutability](#temporary-wrap-a-value-to-provide-interior-mutability)
 - [`mem::replace`, but for interior mutability](#memreplace-but-for-interior-mutability)
@@ -152,7 +152,7 @@ impl Condvar {
 }
 ```
 
-### `bind` and `unlocked`
+### `bump` and `unlocked`
 
 With a `Mutex` you may want to temporary release your lock on the primitive to let another thread do some work.
 
@@ -172,7 +172,7 @@ You `wait` on the `Condvar`, giving it a mutable reference to the `MutexGuard`, 
 
 Temporary lending out mutable access to another thread by waiting on a `Condvar` with `MutexGuard` is safe, for the same reasons as `bump` and `unlocked`. The standard library and `parking_lot` only support this combination, using a `Condvar` in with a `MutexGuard`.
 
-The [`shared-mutex` crate](https://crates.io/crates/shared-mutex) has an alternative RW lock implementation that is designed yo be usebale with condition variables. Again waiting with a `SharedMutexWriteGuard` is sound, as we can lend a unique reference. It is also correct if the thread holds only one `SharedMutexReadGuard`. And if the thread holds multiple `SharedMutexReadGuard`, only one will be unlocked and the thread will wait until notified. As another thread can't acquire a write lock now, we will probably have a deadlock but no unsoundness.
+The [`shared-mutex` crate](https://crates.io/crates/shared-mutex) has an alternative RW lock implementation that is designed to be useable with condition variables. Again waiting with a `SharedMutexWriteGuard` is sound, as we can lend a unique reference. It is also correct if the thread holds only one `SharedMutexReadGuard`. And if the thread holds multiple `SharedMutexReadGuard`, only one will be unlocked and the thread will wait until notified. As another thread can't acquire a write lock now, we will probably have a deadlock but no unsoundness.
 
 ## Refining smart pointers
 
