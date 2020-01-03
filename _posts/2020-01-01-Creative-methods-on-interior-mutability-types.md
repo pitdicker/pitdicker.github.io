@@ -16,6 +16,9 @@ Yet there are some creative methods that push the limit of those abstractions. L
 | `replace`           | yes     | yes      | yes          | yes        | —       | —        | —          | yes*    | yes*    | yes*
 | `swap`              | yes     | yes      | yes          | yes        | —       | —        | —          | —       | —       | —
 | `update`            | yes     | —        | —            | yes        | —       | —        | —          | —*      | —*      | —*
+| `Ref::bump`         | —       | —        | —            | —          | yes*    | yes*     | —          | —       | —       | —
+| `Ref::unlocked`     | —       | —        | —            | —          | yes*    | yes*     | —          | —       | —       | —
+| `Condvar::wait`     | —       | —        | —            | —          | yes     | yes*     | —          | —       | —       | —
 | `Ref::map`          | —       | —        | —            | yes        | yes*    | yes*     | —          | —       | —       | —
 | `Ref::map_split`    | —       | —        | —            | yes        | yes*    | yes*     | —          | —       | —       | —
 | `as_slice_of_cells` | yes     | —        | —            | —          | —       | —        | —          | —       | yes*    | yes*
@@ -32,6 +35,7 @@ We could place these methods in six categories:
 - [Temporary wrap a value to provide interior mutability](#temporary-wrap-a-value-to-provide-interior-mutability)
 - [`mem::replace`, but for interior mutability](#memreplace-but-for-interior-mutability)
 - [Updating a value (single-threaded wrappers only)](#updating-a-value-single-threaded-wrappers-only)
+- [Temporary lending out a mutable reference to another thread](#temporary-lending-out-a-mutable-reference-to-another-thread)
 - [Refining smart pointers](#refining-smart-pointers)
 - [References in `Cell` if the structure is 'flat'](#references-in-cell-if-the-structure-is-flat)
 - [Downgrading a mutable smart pointer](#downgrading-a-mutable-smart-pointer)
@@ -134,6 +138,42 @@ For synchronization primitives something like `RefCell::replace_with` is also no
 
 For `OnceCell` it doesn't make sense to update the value, because the only time its value can be mutated is while it is uninitialized. An alternative could be [`OnceFlipCell`](https://github.com/matklad/rfcs/blob/std-lazy/text/0000-standard-lazy-types.md#why-oncecell-as-a-primitive), which comes with an initial state that can be flipped to a usable state. But I really don't see much use for such a type.
 
+## Temporary lending out a mutable reference to another thread
+Simplified API:
+```rust
+impl<'a, T: ?Sized> MutexGuard<'a, T> {
+    pub fn bump(s: &mut Self)
+    pub fn unlocked<F, U>(s: &mut Self, f: F) -> U
+        where F: FnOnce() -> U
+}
+
+impl Condvar {
+    pub fn wait<T: ?Sized>(&self, mutex_guard: &mut MutexGuard<T>)
+}
+```
+
+### `bind` and `unlocked`
+
+With a `Mutex` you may want to temporary release your lock on the primitive to let another thread do some work.
+
+`parking_lot` offers a [`MutexGuard::bump`](https://docs.rs/lock_api/0.3/lock_api/struct.MutexGuard.html#method.bump) method that lets you temporary give up your lock on the mutex, and block until the lock can be acquired again. The similar [`MutexGuard::unlocked`](https://docs.rs/lock_api/0.3/lock_api/struct.MutexGuard.html#method.unlocked) method lets you run a closure in the meantime (and block afterwards). This is functionally equivalent to lacking and unlocking the mutex, but it can be much more efficient in the case where there are no waiting threads.
+
+`bump` and `unlocked` take exclusive access to the smart pointer. Another thread which acquires the mutex has mutable access, so in a way you can view those two methods as lending out a mutable reference to another thread.
+
+Is `bump` also sound for `RwLock` and `ReentrantMutex`? `RwLockWriteGuard` has exclusive mutable access, so it can lend out that access to another thread with `bump`. But one thread can hold multiple instances of `RwLockReadGuard` or `ReentrantMutexGuard`, in which case `bump` can't guarantee exclusive access.
+
+Still they are also safe, because now it is not the type system that guarantees exclusive access, but the synchronization primitive. If the current thread holds more than one lock, only one will be released. Then another thread won't be able to get a lock for write access (or in the case of `ReentrantMutex`, won't be able to get a lock at all). `bump` will basically have no effect if there are multiple instances of `RwLockReadGuard` or `ReentrantMutexGuard`.
+
+### Condition variables
+
+Waiting on a condition variable with a mutex with [`Condvar::wait`](https://doc.rust-lang.org/std/sync/struct.Condvar.html#method.wait) also gives up the lock, but the thread doesn't wake up again until notified.
+
+You `wait` on the `Condvar`, giving it a mutable reference to the `MutexGuard`, which temporary releases the lock. Another thread acquires the lock, does the work you are waiting on, calls [`Condvar::notify_*`](https://doc.rust-lang.org/std/sync/struct.Condvar.html#method.notify_one) and releases the lock to wake you up. You now again hold the lock.
+
+Temporary lending out mutable access to another thread by waiting on a `Condvar` with `MutexGuard` is safe, for the same reasons as `bump` and `unlocked`. The standard library and `parking_lot` only support this combination, using a `Condvar` in with a `MutexGuard`.
+
+The [`shared-mutex` crate](https://crates.io/crates/shared-mutex) has an alternative RW lock implementation that is designed yo be usebale with condition variables. Again waiting with a `SharedMutexWriteGuard` is sound, as we can lend a unique reference. It is also correct if the thread holds only one `SharedMutexReadGuard`. And if the thread holds multiple `SharedMutexReadGuard`, only one will be unlocked and the thread will wait until notified. As another thread can't acquire a write lock now, we will probably have a deadlock but no unsoundness.
+
 ## Refining smart pointers
 
 Basic API (see documentation of [`Ref`](https://doc.rust-lang.org/std/cell/struct.Ref.html), [`RefMut`](https://doc.rust-lang.org/std/cell/struct.RefMut.html)):
@@ -166,15 +206,10 @@ impl<'b, T: ?Sized> RefMut<'b, T> {
 ### `Ref::map`
 If you have a smart pointer type to inside a `RefCell`, you can take normal references to parts of the wrapped type. But `Ref::map` allows you to refine the smart pointer to point to a part of the wrapped type.
 
-`map` was also once implemented for `MutexGuard`, `RwLockReadGuard` and `RwLockWriteGuard`, but [removed](https://github.com/rust-lang/rust/issues/27746#issuecomment-180458770). The problem is the interaction with `Condvar`. The basic way to use `Condvar` is:
-1. Lock a mutex.
-2. Wait on the conditional variable with [`Condvar::wait`](https://doc.rust-lang.org/std/sync/struct.Condvar.html#method.wait), passing it a mutable reference to the `MutexGuard` (this unlocks the mutex).
-3. Another thread can now lock the mutex, signal when done with [`Condvar::notify_*`](https://doc.rust-lang.org/std/sync/struct.Condvar.html#method.notify_one), and unlock the mutex.
-4. The first thread is woken up and again holds a lock on the mutex.
+`map` was also once implemented for `MutexGuard`, `RwLockReadGuard` and `RwLockWriteGuard`, but [removed](https://github.com/rust-lang/rust/issues/27746#issuecomment-180458770). The problem is the interaction with `Condvar`. Notice that if we would refine the smart pointer with `MutexGuard::map` to only part of the wrapped value, through `Condvar` we would give the other thread also mutable access to _only part of the value_. But the other thread gets access to the _entire_ wrapped value. That can easily lead to things like reading from deallocated memory, as discovered in [this comment](https://github.com/rust-lang/rust/pull/30834#issuecomment-180284290).
 
-Notice that if we would refine the smart pointer with `MutexGuard::map` to only part of the wrapped value, through `Condvar` we would give the other thread also mutable access to _only part of the value_. But that thread gets access to the _entire_ wrapped value. That can easily lead to things like reading from deallocated memory, as discovered in [this comment](https://github.com/rust-lang/rust/pull/30834#issuecomment-180284290).
+The solution is to make `map` return a different type so it can't be used as argument for `Condvar::wait`. `parking_lot` implements this solution, its [`MutexGuard::map`](https://docs.rs/lock_api/0.3/lock_api/struct.MutexGuard.html#method.map) returns a `MappedMutexGuard`. Similarly the `map` methods on [`RwLockWriteGuard`](https://docs.rs/lock_api/0.3/lock_api/struct.RwLockWriteGuard.html), [`RwLockReadGuard`](https://docs.rs/lock_api/0.3/lock_api/struct.RwLockReadGuard.html) and [`ReentrantMutexGuard`](https://docs.rs/lock_api/0.3/lock_api/struct.ReentrantMutexGuard.html) should return another type, because they can also [temporary lend out a mutable reference](#temporary-lending-out-a-mutable-reference-to-another-thread) to the entire value to another thread with `bump`.
 
-The solution is to make `map` return different type, although functionally the same, so it can't be used as argument for `Condvar::wait`. `parking_lot` implements this solution, its [`MutexGuard::map`](https://docs.rs/lock_api/0.3/lock_api/struct.MutexGuard.html#method.map) returns a `MappedMutexGuard`. This is all also true for `Rwlock`, just in case it can be used in combination with `Condvar` in the future.
 
 ### `RefMut::map_split`
 While `Ref::map` is nice, `RefMut::map_split` is where it gets really interesting in my opinion. It allows you to refine a smart pointer to _two_ parts of the wrapped value. This is the only way to get more than one mutable reference to inside the `RefCell`.
@@ -245,5 +280,6 @@ I can't think of any other directions, but I am sure this list will grow outdate
 Do you know of any other creative methods on interior mutability types?
 
 ### Revision history
+- 2020-01-03: added 'Temporary lending out a mutable reference to another thread'
 - 2020-01-02: added 'Downgrading a mutable smart pointer'
 - 2020-01-01: `TCell` and `LCell` can also support `as_slice_of_cells`
