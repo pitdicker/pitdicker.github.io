@@ -161,6 +161,23 @@ Is `bump` also sound for `RwLock` and `ReentrantMutex`? `RwLockWriteGuard` has e
 
 The standard library only supports the `Condvar` with `Mutex` case. `parking_lot` also supports the `bump` methods on the smart pointers of all three synchronization primitives.
 
+```
+impl<'mutex, T: ?Sized> SharedMutexReadGuard<'mutex, T> {
+    pub fn wait_for_write(self, cond: &Condvar) -> LockResult<SharedMutexWriteGuard<'mutex, T>>
+    pub fn wait_for_read(self, cond: &Condvar) -> LockResult<Self>
+}
+
+impl<'mutex, T: ?Sized> SharedMutexWriteGuard<'mutex, T> {
+    pub fn wait_for_write(self, cond: &Condvar) -> LockResult<Self>
+    pub fn wait_for_read(self, cond: &Condvar) -> LockResult<SharedMutexReadGuard<'mutex, T>>
+}
+```
+
+multiple SharedMutexReadGuard + condvar = deadlock
+
+Multiple RwLockReadGuards per thread are UB on Windows and OS X. https://github.com/rust-lang/rust/issues/35836
+Multiple RwLockWriteGuards are not prevented on Posix. https://github.com/rust-lang/rust/issues/53127
+
 ## Refining smart pointers
 
 Basic API (see documentation of [`Ref`](https://doc.rust-lang.org/std/cell/struct.Ref.html), [`RefMut`](https://doc.rust-lang.org/std/cell/struct.RefMut.html)):
@@ -232,13 +249,19 @@ Are there any other internal mutability types that can follow this trick? The ty
 
 `TCell` and `LCell` could implement `from_mut`, and can also ensure there a mutable reference is unique. The owner ensures either all references are shared, or that there is only one mutable reference. Multiple mutable references can be created with [`LCellOwner::{rw2, rw3}`](https://docs.rs/qcell/0.4.0/qcell/struct.LCellOwner.html#method.rw2), but those methods check at runtime the adresses are different, and can be extended to check the addresses don't fall within the size of one of the values.
 
-## Downgrading a mutable smart pointer
+## Downgrading or upgrading a smart pointer
 Basic API:
 ```rust
 impl<'b, T: ?Sized> RefMut<'b, T> {
     pub fn downgrade(orig: RefMut<'b, T>) -> Ref<'b, T>
 }
+
+impl<'b, T: ?Sized> Ref<'b, T> {
+    pub fn upgrade(orig: Ref<'b, T>) -> RefMut<'b, T>
+}
 ```
+
+### Downgrade
 
 `RwLockWriteGuard` in `parking_lot` has a [`downgrade`](https://docs.rs/lock_api/0.3/lock_api/struct.RwLockWriteGuard.html#method.downgrade) method which turns it into a `RwLockReadGuard`. It is instructive to explore why `RefCell`s `RefMut` can't provide a similar method to turn it into a `Ref`.
 
@@ -258,6 +281,17 @@ let ref2 = refcell.borrow();
 
 For `RwLockWriteGuard` however `downgrade` is sound, because it's `map` method returns another type. But that returned type, `MappedRwLockWriteGuard`, now has to remain unique, so [`MappedRwLockWriteGuard::downgrade`](https://docs.rs/lock_api/0.3/lock_api/struct.MappedRwLockWriteGuard.html#method.downgrade) is unsound.
 
+### Upgrade
+
+upgrade:
+- if there is more than one shared reference:
+  - RefCell: panic
+  - RwLock: block (if only in other threads), deadlock (if also in current thread)
+- a mapped reference can be upgraded, so maybe useful for RefCell
+- trying to acquire `RwLockwriteGuard` more than once (per thread) can cause a deadlock.
+- trying to acquire `RwLockUpgradableReadGuard` more than once (per thread) can cause a deadlock.
+- `RwLockUpgradableReadGuard`: only one per thread
+
 ## Any other creativity?
 
 Appearently rustaceans really like to push the boundaries, to explore the limits of what keeps these interior mutability conventions sound.
@@ -270,3 +304,14 @@ Do you know of any other creative methods on interior mutability types?
 - 2020-01-03: added 'Temporary lending out from a smart pointer'
 - 2020-01-02: added 'Downgrading a mutable smart pointer'
 - 2020-01-01: `TCell` and `LCell` can also support `as_slice_of_cells`
+
+### Bugs discovered while writing this post
+- [parking_lot#198](https://github.com/Amanieu/parking_lot/issues/198): MappedRwLockWriteGuard::downgrade is unsound
+- [parking_lot#199](https://github.com/Amanieu/parking_lot/issues/199): `RwLockReadGuard::bump` is unsound
+- [qcell#8 (comment)](https://github.com/uazu/qcell/issues/8#issuecomment-570043008): not a bug, but an issue to keep in mind when extending `LCell` to include `as_slice_of_cells` methods.
+
+TODO:
+- upgrade
+- filter_map (& ref_filter_map crate) https://doc.rust-lang.org/1.7.0/std/cell/struct.Ref.html#method.filter_map
+https://github.com/rust-lang/rust/pull/25747
+- sublock crate
