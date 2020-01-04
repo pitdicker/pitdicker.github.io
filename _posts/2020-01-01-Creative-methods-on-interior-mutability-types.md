@@ -58,9 +58,9 @@ If you have exclusive, mutable access, you don't need interior mutability. In th
 Basic API:
 ```rust
 impl<T: ?Sized> Cell<T> {
-    pub fn into_inner(self) -> T
-    pub fn get_mut(&mut self) -> &mut T
-    pub const fn as_ptr(&self) -> *mut T
+    fn into_inner(self) -> T
+    fn get_mut(&mut self) -> &mut T
+    const fn as_ptr(&self) -> *mut T
 }
 ```
 
@@ -85,7 +85,7 @@ An `as_ptr` method was not available for normal integer atomics. Such a function
 Basic API:
 ```rust
 impl<T: ?Sized> Cell<T> {
-    pub fn from_mut(t: &mut T) -> &Cell<T>
+    fn from_mut(t: &mut T) -> &Cell<T>
 }
 ```
 
@@ -107,8 +107,8 @@ One small [missed opportunity](https://github.com/rust-lang/rust/issues/43038#is
 Basic API:
 ```rust
 impl<T: ?Sized> Cell<T> {
-    pub fn replace(&self, val: T) -> T
-    pub fn swap(&self, other: &Cell<T>)
+    fn replace(&self, val: T) -> T
+    fn swap(&self, other: &Cell<T>)
 }
 ```
 
@@ -123,12 +123,12 @@ What if you want to swap the value of two Cells? You could do so by using `repla
 Basic API:
 ```rust
 impl<T: Copy> Cell<T> {
-    pub fn update<F>(&self, f: F) -> T
+    fn update<F>(&self, f: F) -> T
         where F: FnOnce(T) -> T
 }
 
 impl<T: ?Sized> RefCell<T> {
-    pub fn replace_with<F>(&self, f: F) -> T
+    fn replace_with<F>(&self, f: F) -> T
         where F: FnOnce(&mut T) -> T
 }
 ```
@@ -164,7 +164,7 @@ That brings us to a few safe conversions:
 Only the conversion of slices is currently implemented, with [`Cell::as_slice_of_cells`](https://doc.rust-lang.org/std/cell/struct.Cell.html#method.as_slice_of_cells):
 ```rust
 impl<T> Cell<[T]> {
-    pub fn as_slice_of_cells(&self) -> &[Cell<T>]
+    fn as_slice_of_cells(&self) -> &[Cell<T>]
 }
 ```
 
@@ -178,13 +178,13 @@ Are there any other internal mutability types that can follow this trick? The ty
 Simplified API:
 ```rust
 impl<'a, T: ?Sized> MutexGuard<'a, T> {
-    pub fn bump(s: &mut Self)
-    pub fn unlocked<F, U>(s: &mut Self, f: F) -> U
+    fn bump(s: &mut Self)
+    fn unlocked<F, U>(s: &mut Self, f: F) -> U
         where F: FnOnce() -> U
 }
 
 impl Condvar {
-    pub fn wait<T: ?Sized>(&self, mutex_guard: &mut MutexGuard<T>)
+    fn wait<T: ?Sized>(&self, mutex_guard: &mut MutexGuard<T>)
 }
 ```
 
@@ -219,27 +219,29 @@ In the common `ReentrantMutex<RefCell>` case there is a decoupling between holdi
 Basic API (see documentation of [`Ref`](https://doc.rust-lang.org/std/cell/struct.Ref.html), [`RefMut`](https://doc.rust-lang.org/std/cell/struct.RefMut.html)):
 ```rust
 impl<T: ?Sized> RefCell<T> {
-    pub fn borrow(&self) -> Ref<T>
-    pub fn borrow_mut(&self) -> RefMut<T>
+    fn borrow(&self) -> Ref<T>
+    fn borrow_mut(&self) -> RefMut<T>
 }
 
 impl<'b, T: ?Sized> Ref<'b, T>{
-    pub fn map<U: ?Sized, F>(orig: Ref<'b, T>, f: F) -> Ref<'b, U>
-        where F: FnOnce(&T) -> &U
-    pub fn map_split<U: ?Sized, V: ?Sized, F>(
-        orig: Ref<'b, T>, f: F
-    ) -> (Ref<'b, U>, Ref<'b, V>)
-        where F: FnOnce(&T) -> (&U, &V)
-    pub fn clone(orig: &Ref<'b, T>) -> Ref<'b, T>
+    fn map<U, F>(orig: Ref<'b, T>, f: F) -> Ref<'b, U>
+        where U: ?Sized,
+              F: FnOnce(&T) -> &U
+    fn map_split<U, V, F>(orig: Ref<'b, T>, f: F) -> (Ref<'b, U>, Ref<'b, V>)
+        where U: ?Sized,
+              V: ?Sized,
+              F: FnOnce(&T) -> (&U, &V)
+    fn clone(orig: &Ref<'b, T>) -> Ref<'b, T>
 }
 
 impl<'b, T: ?Sized> RefMut<'b, T> {
-    pub fn map<U: ?Sized, F>(orig: RefMut<'b, T>, f: F) -> RefMut<'b, U>
-        where F: FnOnce(&mut T) -> &mut U
-    pub fn map_split<U: ?Sized, V: ?Sized, F>(
-        orig: RefMut<'b, T>, f: F
-    ) -> (RefMut<'b, U>, RefMut<'b, V>)
-        where F: FnOnce(&mut T) -> (&mut U, &mut V)
+    fn map<U, F>(orig: RefMut<'b, T>, f: F) -> RefMut<'b, U>
+        where U: ?Sized,
+              F: FnOnce(&mut T) -> &mut U
+    fn map_split<U, V, F>(orig: RefMut<'b, T>, f: F) -> (RefMut<'b, U>, RefMut<'b, V>)
+        where U: ?Sized,
+              V: ?Sized,
+              F: FnOnce(&mut T) -> (&mut U, &mut V)
 }
 ```
 
@@ -262,11 +264,11 @@ Note that all these methods on smart pointers don't take `self` as argument, but
 Basic API:
 ```rust
 impl<'b, T: ?Sized> RefMut<'b, T> {
-    pub fn downgrade(orig: RefMut<'b, T>) -> Ref<'b, T>
+    fn downgrade(orig: RefMut<'b, T>) -> Ref<'b, T>
 }
 
 impl<'b, T: ?Sized> Ref<'b, T> {
-    pub fn upgrade(orig: Ref<'b, T>) -> RefMut<'b, T>
+    fn upgrade(orig: Ref<'b, T>) -> RefMut<'b, T>
 }
 ```
 
@@ -309,14 +311,14 @@ Two possible solutions:
 Basic API:
 ```rust
 impl<'mutex, T: ?Sized> SharedMutexReadGuard<'mutex, T> {
-    pub fn wait_for_write(self, cond: &Condvar)
+    fn wait_for_write(self, cond: &Condvar)
         -> LockResult<SharedMutexWriteGuard<'mutex, T>>
-    pub fn wait_for_read(self, cond: &Condvar) -> LockResult<Self>
+    fn wait_for_read(self, cond: &Condvar) -> LockResult<Self>
 }
 
 impl<'mutex, T: ?Sized> SharedMutexWriteGuard<'mutex, T> {
-    pub fn wait_for_write(self, cond: &Condvar) -> LockResult<Self>
-    pub fn wait_for_read(self, cond: &Condvar)
+    fn wait_for_write(self, cond: &Condvar) -> LockResult<Self>
+    fn wait_for_read(self, cond: &Condvar)
         -> LockResult<SharedMutexReadGuard<'mutex, T>>
 }
 ```
