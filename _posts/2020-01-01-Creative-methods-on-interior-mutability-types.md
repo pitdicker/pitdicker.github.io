@@ -272,6 +272,12 @@ It was at some time available inside the standard library as the unstable method
 
 `parking_lot` has a [`try_map`](https://docs.rs/lock_api/0.3/lock_api/struct.RwLockReadGuard.html#method.try_map) method for all its guards, just as `shared_mutex` has with [`result_map`](https://docs.rs/shared-mutex/0.3.1/shared_mutex/struct.MappedSharedMutexWriteGuard.html#method.result_map). In my opinion that API is superior to the original `filter_map`, because it returns a `Result`. That way the method can return either a refined reference, or the original one.
 
+### Recover
+
+Both `parking_lot` and `shared_mutex` return `Mapped*` types from their map methods. `shared_mutex` has a potentially useful method: it can [`recover`](https://docs.rs/shared-mutex/0.3/shared_mutex/struct.MappedSharedMutexReadGuard.html#method.recover) a reference to the entire value from a mapped reference, without releasing the lock, if you can also provide a reference to the mutex / RW lock.
+
+It is worth noting that a library can't provide both `split_mut` and `recover` on a mutable (mapped) smart pointer. `split_mut` would allow multiple mutable references to exist, pointing to different parts of the value. Recovering from one a mutable reference to the entire value would alias the other ones.
+
 ## Downgrading or upgrading a smart pointer
 Basic API:
 ```rust
@@ -348,7 +354,7 @@ I can't think of any other directions, but I am sure this list will grow outdate
 Do you know of any other creative methods on interior mutability types?
 
 ### Revision history
-- 2020-01-04: added `Ref::try_map`
+- 2020-01-04: added `Ref::try_map` and `MappedRef::recover`
 - 2020-01-04: added `Ref::upgrade`
 - 2020-01-03: added 'Temporary lending out a mutable reference to another thread'
 - 2020-01-02: added 'Downgrading a mutable smart pointer'
