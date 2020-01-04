@@ -29,9 +29,9 @@ On smart pointers:
 | `Condvar::wait` | —      | —        | yes          | yes*              | yes*               | yes*
 | `map`           | yes    | yes      | yes*         | yes*              | yes*               | yes
 | `map_split`     | yes    | yes      | yes*         | yes*              | yes*               | yes*
+| `try_map`       | yes*   | yes*     | yes*         | yes*              | yes*               | yes
 | `downgrade`     | —      | —        | —            | —                 | yes*               | —
 | `upgrade`       | yes*   | —        | —            | maybe             | —                  | —
-
 
 _¹: In this post I use `Atomic<T>` to describe a wrapper based on atomic operations, and `AtomicCell<T>` to describe a lock-based solution for larger types._
 
@@ -231,6 +231,9 @@ impl<'b, T: ?Sized> Ref<'b, T>{
         where U: ?Sized,
               V: ?Sized,
               F: FnOnce(&T) -> (&U, &V)
+    fn try_map<U, F>(orig: Ref<'b, T>, f: F) -> Result<Ref<'b, U>, Self>
+        where U: ?Sized,
+              F: FnOnce(&T) -> Option<&U>
     fn clone(orig: &Ref<'b, T>) -> Ref<'b, T>
 }
 
@@ -242,8 +245,13 @@ impl<'b, T: ?Sized> RefMut<'b, T> {
         where U: ?Sized,
               V: ?Sized,
               F: FnOnce(&mut T) -> (&mut U, &mut V)
+    fn try_map<U, F>(orig: RefMut<'b, T>, f: F) -> Result<RefMut<'b, U>, Self>
+        where U: ?Sized,
+              F: FnOnce(&mut T) -> Option<&mut U>
 }
 ```
+
+Note that all these methods on smart pointers don't take `self` as argument, but are associated methods instead. A normal method would interfere with methods of the same name on the contents of a `RefCell` used through `Deref`.
 
 ### `Ref::map`
 If you have a smart pointer type to inside a `RefCell`, you can take normal references to parts of the wrapped type. But `Ref::map` allows you to refine the smart pointer to point to a part of the wrapped type.
@@ -252,13 +260,17 @@ If you have a smart pointer type to inside a `RefCell`, you can take normal refe
 
 The solution is to make `map` return a different type so it can't be used as argument for `Condvar::wait`. `parking_lot` implements this solution, its [`MutexGuard::map`](https://docs.rs/lock_api/0.3/lock_api/struct.MutexGuard.html#method.map) returns a `MappedMutexGuard`. Similarly the `map` methods on [`RwLockWriteGuard`](https://docs.rs/lock_api/0.3/lock_api/struct.RwLockWriteGuard.html), [`RwLockReadGuard`](https://docs.rs/lock_api/0.3/lock_api/struct.RwLockReadGuard.html) and [`ReentrantMutexGuard`](https://docs.rs/lock_api/0.3/lock_api/struct.ReentrantMutexGuard.html) should return another type, because they can also [temporary lend out a mutable reference](#temporary-lending-out-a-mutable-reference-to-another-thread) to the entire value to another thread with `bump`.
 
-
 ### `RefMut::map_split`
 While `Ref::map` is nice, `RefMut::map_split` is where it gets really interesting in my opinion. It allows you to refine a smart pointer to _two_ parts of the wrapped value. This is the only way to get more than one mutable reference to inside the `RefCell`.
 
 Just like `map`, `map_split` is not implemented for `Mutex` and `RwLock` in the standard library. `parking_lot` also doesn't support `map_split` yet. And because the concept of multiple mutable references goes pretty deep, that may take a long time, if ever, to be supported.
 
-Note that all these methods on smart pointers don't take `self` as argument, but are associated methods instead. A normal method would interfere with methods of the same name on the contents of a `RefCell` used through `Deref`.
+### `Ref::try_map`
+Sometimes you want to refine the smart pointer to part of the value, but don't know yet if it exists. Examples are an enum, vector or hashmap. If it is undesirable to do the lookup twice, once to confirm it exists, and once in `map`, something like `try_map` comes in handy.
+
+It was at some time available inside the standard library as the unstable method [`Ref::filter_map`](https://doc.rust-lang.org/1.7.0/std/cell/struct.Ref.html#method.filter_map). The [`ref_filter_map` crate](https://crates.io/crates/ref_filter_map) provides the functionality for `RefCell` after it got removed from the standard library by smuggling around a raw pointer.
+
+`parking_lot` has a [`try_map`](https://docs.rs/lock_api/0.3/lock_api/struct.RwLockReadGuard.html#method.try_map) method for all its guards, just as `shared_mutex` has with [`result_map`](https://docs.rs/shared-mutex/0.3.1/shared_mutex/struct.MappedSharedMutexWriteGuard.html#method.result_map). In my opinion that API is superior to the original `filter_map`, because it returns a `Result`. That way the method can return either a refined reference, or the original one.
 
 ## Downgrading or upgrading a smart pointer
 Basic API:
@@ -336,6 +348,7 @@ I can't think of any other directions, but I am sure this list will grow outdate
 Do you know of any other creative methods on interior mutability types?
 
 ### Revision history
+- 2020-01-04: added `Ref::try_map`
 - 2020-01-04: added `Ref::upgrade`
 - 2020-01-03: added 'Temporary lending out a mutable reference to another thread'
 - 2020-01-02: added 'Downgrading a mutable smart pointer'
