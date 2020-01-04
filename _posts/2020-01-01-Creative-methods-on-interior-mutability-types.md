@@ -174,6 +174,10 @@ Temporary lending out mutable access to another thread by waiting on a `Condvar`
 
 The [`shared-mutex` crate](https://crates.io/crates/shared-mutex) has an alternative RW lock implementation that is designed to be useable with condition variables. Again waiting with a `SharedMutexWriteGuard` is sound, as we can lend a unique reference. It is also correct if the thread holds only one `SharedMutexReadGuard`. And if the thread holds multiple `SharedMutexReadGuard`, only one will be unlocked and the thread will wait until notified. As another thread can't acquire a write lock now, we will probably have a deadlock but no unsoundness.
 
+There is currently no crate (that I know of) that supports waiting on a `Condvar` in combination with a `ReentrantMutex`. It would probably quickly lead to deadlocks, because if it was possible to avoid the chance of holding multiple locks, you should not be using `ReentrantMutex`.
+
+In the common `ReentrantMutex<RefCell>` case there is a decoupling between holding a number of locks, and holding references. If those two were more closely integrated it would be possible to temporary give up all locks a thread holds if it only has one reference active, when waiting on a `Condvar`. And to panic otherwise.
+
 ## Refining smart pointers
 
 Basic API (see documentation of [`Ref`](https://doc.rust-lang.org/std/cell/struct.Ref.html), [`RefMut`](https://doc.rust-lang.org/std/cell/struct.RefMut.html)):
