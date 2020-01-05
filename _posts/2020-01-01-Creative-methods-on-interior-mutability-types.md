@@ -348,7 +348,7 @@ impl<'mutex, T: ?Sized> SharedMutexWriteGuard<'mutex, T> {
 }
 ```
 
-In the part on [condition variables](#condition-variables) we have seen waiting on those is an operation that ensures the smart pointer is unique. And when waiting the threads temporary give up their lock on the RW lock. That makes this a safe moment to convert a read lock to a write lock.
+In the part on [condition variables](#condition-variables) we have seen waiting on those is an operation that ensures the smart pointer is unique. And while waiting the threads temporary give up their lock on the RW lock. That makes this a safe moment to convert a read lock to a write lock.
 
 The [`SharedMutex`](https://docs.rs/shared-mutex/0.3/shared_mutex/struct.SharedMutex.html) RW lock implementation provides such combinations. `SharedMutexReadGuard::wait_for_write` will upgrade the lock after waiting, and `SharedMutexWriteGuard::wait_for_read` will downgrade it.
 
@@ -384,6 +384,78 @@ Because it is somewhat up for discussion how much value the ability to handle po
 
 For `Mutex` and `RwLock` in `parking_lot`, which don't support poisoning, I think a method like `with` can be a nice addition.
 
+## Sendable smart pointers
+
+```rust
+unsafe impl<T: ?Sized> Send for RefCell<T> where T: Send {}
+impl<'b, T> !Send for Ref<'b, T>
+```
+
+For `Ref` to be sendable, both `T` and the `borrow` field in `RefCell` must be sync: concurrently usable from multiple threads.
+
+If `RwLockReadGuard` was send, it would allow reads from multiple threads concurrently so requires `Sync`, but `RwLock` already allows and requires that.
+
+
+sendable guards https://github.com/Amanieu/parking_lot/issues/197
+
+https://stackoverflow.com/questions/48627990/thread-ownership-of-a-mutex
+
+Knowing which thread currently holds a mutex (or RW lock / reentrant mutex) locked can enable some features, like:
+- Panic instead of deadlock when a tried tries to acquire an exclusive lock while it already holds a lock (like `PTHREAD_MUTEX_ERRORCHECK`).
+- Priority inheritance.
+- deadlock detection or priority inversion. And it can enable turning a deadlock into a panic when one thread tries to acquire a mutable lock more than once.
+
+type         | `T: Send` 
+-------------| 
+`Cell`       | 
+`Atomic`     | 
+`AtomicCell` | 
+`RefCell`    | 
+`Mutex`      | 
+`RwLock`     | 
+`OnceCell`   | 
+`QCell`      | 
+`TCell`      | 
+`LCell`      |
+
+
+Send (for all types):
+```rust
+unsafe impl<T: ?Sized + Send> Send for Cell<T> {}
+```
+
+Sync: type must allow concurrent access, required for the read locks of RwLock, for OnceCell, and the qcell types.
+https://github.com/rust-lang/rust/issues/41622
+```rust
+unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
+unsafe impl<T: Send + Sync> Sync for OnceCell<T> {}
+unsafe impl<T: Send + Sync> Sync for QCell<T>
+unsafe impl<T: Send + Sync> Sync for TCell<T>
+unsafe impl<T: Send + Sync> Sync for LCell<T>
+```
+
+current `RwLock`:
+```rust
+impl<T: ?Sized> RwLock<T> {
+    pub fn read(&self) -> RwLockReadGuard<T>
+    pub fn write(&self) -> RwLockWriteGuard<T>
+}
+unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
+```
+Alternative for `RwLock`:
+```rust
+impl<T: ?Sized> RwLock<T> {
+    pub fn write(&self) -> RwLockWriteGuard<T>
+}
+impl<T: ?Sized + Sync> RwLock<T> {
+    pub fn read(&self) -> RwLockReadGuard<T>
+}
+unsafe impl<T: ?Sized + Send> Sync for RwLock<T> {}
+```
+
+https://pubs.opengroup.org/onlinepubs/009695399/functions/pthread_mutex_lock.html
+> If a thread attempts to unlock a mutex that it has not locked or a mutex which is unlocked, undefined behavior results.
+
 ## Any other creativity?
 
 Appearently rustaceans really like to push the boundaries, to explore the limits of what keeps these interior mutability conventions sound.
@@ -400,3 +472,74 @@ Do you know of any other creative methods on interior mutability types?
 - 2020-01-03: added 'Temporary lending out a mutable reference to another thread'
 - 2020-01-02: added 'Downgrading a mutable smart pointer'
 - 2020-01-01: `TCell` and `LCell` can also support `as_slice_of_cells`
+
+### Bugs discovered while writing this post
+- [parking_lot#198](https://github.com/Amanieu/parking_lot/issues/198): MappedRwLockWriteGuard::downgrade is unsound
+- [qcell#8 (comment)](https://github.com/uazu/qcell/issues/8#issuecomment-570043008): not a bug, but an issue to keep in mind when extending `LCell` to include `as_slice_of_cells` methods.
+
+
+## TODO
+
+Multiple RwLockReadGuards per thread are UB on Windows and OS X. https://github.com/rust-lang/rust/issues/35836
+Multiple RwLockWriteGuards are not prevented on Posix. https://github.com/rust-lang/rust/issues/53127
+
+
+TODO:
+- clone
+- sublock crate https://crates.io/crates/sublock
+- atomic refcell
+- elide locks using Intel Restricted Transactional Memory.
+
+
+Mutex bits (TID | FUTEX_WAITERS | FUTEX_OWNER_DIED):
+- 1 HAS_WAITERS
+- 1 POISONED (FUTEX_OWNER_DIED)
+- 30 OWNER_ID
+- 32 LOCK_COUNT (because of map_split, unless map_split takes an &mut ref, so the original reference tracks the count)
+
+RwLock bits:
+- AtomicU32:
+  - 1 HAS_WRITERS_WAITING
+  - 1 POISONED (FUTEX_OWNER_DIED)
+  - 30 OWNER_ID (zero if in Reading state, some if in Writing state)
+- AtomicU32:
+  - 1 HAS_READERS_WAITING
+  - 1 (reader state) UPGRADE_SCHEDULED
+  - 30 LOCK_COUNT
+
+ReMutex bits:
+- 1 HAS_WAITERS
+- 1 POISONED (FUTEX_OWNER_DIED)
+- 30 OWNER_ID
+- 2 NONE/READ/WRITE STATE
+- 30 LOCK_COUNT (total number of locks, not number of readers/writers)
+
+typedef struct {
+    int __m_reserved;
+    int __m_count;
+    _pthread_descr __m_owner;
+    int __m_kind;
+    struct _pthread_fastlock __m_lock;
+} pthread_mutex_t;
+typedef struct {
+    int __mutexkind;
+} pthread_mutexattr_t;
+
+typedef struct _pthread_rwlock_t {
+    struct _pthread_fastlock __rw_lock;
+    int __rw_readers;
+    _pthread_descr __rw_writer;
+    _pthread_descr __rw_read_waiting;
+    _pthread_descr __rw_write_waiting;
+    int __rw_kind;
+    int __rw_pshared;
+} pthread_rwlock_t;
+typedef struct {
+    int __lockkind;
+    int __pshared;
+} pthread_rwlockattr_t;
+
+struct _pthread_fastlock {
+    long int __status;
+    int __spinlock;
+};
