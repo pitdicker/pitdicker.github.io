@@ -345,6 +345,33 @@ In the part on [condition variables](#condition-variables) we have seen waiting 
 
 The [`SharedMutex`](https://docs.rs/shared-mutex/0.3/shared_mutex/struct.SharedMutex.html) RW lock implementation provides such combinations. `SharedMutexReadGuard::wait_for_write` will upgrade the lock after waiting, and `SharedMutexWriteGuard::wait_for_read` will downgrade it.
 
+## Scopes instead of smart pointers
+
+For `RefCell` it doesn't make any sense to use it with a closure to provide scoped access to the interoir: it's whole point is to be used in cases where the regular scope-based 'inherited mutability' doesn't work out.
+
+For synchronization primitives you typically want to keep the structure regarding mutability within a thread clear, dealing with concurrency is already hard enough. So scope-based methods can be a good alternative, and scopes make it easier to control the lifetime of a lock than smart pointers.
+
+Basic API, from [a PR](https://github.com/rust-lang/rust/issues/61974) attempting to add such methods to the standard library:
+
+```rust
+impl<T: ?Sized> Mutex<T> {
+    fn with<U, F>(&self, f: F) -> U
+        where F: FnOnce(&mut T) -> U
+}
+
+impl<T: ?Sized> RwLock<T> {
+    fn with_read<U, F>(&self, func: F) -> U
+        where F: FnOnce(&T) -> U
+    fn with_write<U, F>(&self, func: F) -> U
+        where F: FnOnce(&mut T) -> U
+}
+```
+
+Which guarantees can scopes provide? a scope, but does not prevent using another reference to the same type
+
+[`Mutex::with`](https://github.com/rust-lang/rust/pull/61976)
+`RwLock::with_read`, `RwLock::with_write`
+
 ## Any other creativity?
 
 Appearently rustaceans really like to push the boundaries, to explore the limits of what keeps these interior mutability conventions sound.
@@ -359,3 +386,20 @@ Do you know of any other creative methods on interior mutability types?
 - 2020-01-03: added 'Temporary lending out a mutable reference to another thread'
 - 2020-01-02: added 'Downgrading a mutable smart pointer'
 - 2020-01-01: `TCell` and `LCell` can also support `as_slice_of_cells`
+
+### Bugs discovered while writing this post
+- [parking_lot#198](https://github.com/Amanieu/parking_lot/issues/198): MappedRwLockWriteGuard::downgrade is unsound
+- [qcell#8 (comment)](https://github.com/uazu/qcell/issues/8#issuecomment-570043008): not a bug, but an issue to keep in mind when extending `LCell` to include `as_slice_of_cells` methods.
+
+
+## TODO
+
+Multiple RwLockReadGuards per thread are UB on Windows and OS X. https://github.com/rust-lang/rust/issues/35836
+Multiple RwLockWriteGuards are not prevented on Posix. https://github.com/rust-lang/rust/issues/53127
+
+
+TODO:
+- clone
+- sublock crate https://crates.io/crates/sublock
+- sendable guards https://github.com/Amanieu/parking_lot/issues/197
+
