@@ -348,7 +348,7 @@ impl<'mutex, T: ?Sized> SharedMutexWriteGuard<'mutex, T> {
 }
 ```
 
-In the part on [condition variables](#condition-variables) we have seen waiting on those is an operation that ensures the smart pointer is unique. And when waiting the threads temporary give up their lock on the RW lock. That makes this a safe moment to convert a read lock to a write lock.
+In the part on [condition variables](#condition-variables) we have seen waiting on those is an operation that ensures the smart pointer is unique. And while waiting the threads temporary give up their lock on the RW lock. That makes this a safe moment to convert a read lock to a write lock.
 
 The [`SharedMutex`](https://docs.rs/shared-mutex/0.3/shared_mutex/struct.SharedMutex.html) RW lock implementation provides such combinations. `SharedMutexReadGuard::wait_for_write` will upgrade the lock after waiting, and `SharedMutexWriteGuard::wait_for_read` will downgrade it.
 
@@ -384,6 +384,33 @@ Because it is somewhat up for discussion how much value the ability to handle po
 
 For `Mutex` and `RwLock` in `parking_lot`, which don't support poisoning, I think a method like `with` can be a nice addition.
 
+## Sendable smart pointers
+
+```rust
+unsafe impl<T: ?Sized> Send for RefCell<T> where T: Send {}
+impl<'b, T> !Send for Ref<'b, T>
+```
+
+For `Ref` to be sendable, both `T` and the `borrow` field in `RefCell` must be sync: concurrently usable from multiple threads.
+
+If `RwLockReadGuard` was send, it would allow reads from mulriple threads concurrently so requires `Sync`, but `RwLock` already allows and requires that.
+
+
+sendable guards https://github.com/Amanieu/parking_lot/issues/197
+
+https://stackoverflow.com/questions/48627990/thread-ownership-of-a-mutex
+
+Knowing which thread currently holds a mutex (or RW lock / reentrant mutex) locked can enable some features, like deadlock detection or priority inversion. And it can enable turning a deadlock into a panic when one thread tries to acquire a mutable lock more than once.
+
+Sync:
+unsafe impl<T: ?Sized + Send + Sync> Sync for RwLock<T> {}
+unsafe impl<T: Send + Sync> Sync for OnceCell<T> {}
+unsafe impl<T: Send + Sync> Sync for QCell<T>
+unsafe impl<T: Send + Sync> Sync for TCell<T>
+unsafe impl<T: Send + Sync> Sync for LCell<T>
+
+
+
 ## Any other creativity?
 
 Appearently rustaceans really like to push the boundaries, to explore the limits of what keeps these interior mutability conventions sound.
@@ -400,3 +427,20 @@ Do you know of any other creative methods on interior mutability types?
 - 2020-01-03: added 'Temporary lending out a mutable reference to another thread'
 - 2020-01-02: added 'Downgrading a mutable smart pointer'
 - 2020-01-01: `TCell` and `LCell` can also support `as_slice_of_cells`
+
+### Bugs discovered while writing this post
+- [parking_lot#198](https://github.com/Amanieu/parking_lot/issues/198): MappedRwLockWriteGuard::downgrade is unsound
+- [qcell#8 (comment)](https://github.com/uazu/qcell/issues/8#issuecomment-570043008): not a bug, but an issue to keep in mind when extending `LCell` to include `as_slice_of_cells` methods.
+
+
+## TODO
+
+Multiple RwLockReadGuards per thread are UB on Windows and OS X. https://github.com/rust-lang/rust/issues/35836
+Multiple RwLockWriteGuards are not prevented on Posix. https://github.com/rust-lang/rust/issues/53127
+
+
+TODO:
+- clone
+- sublock crate https://crates.io/crates/sublock
+- 
+

@@ -290,7 +290,7 @@ impl QCellOwner {
 impl<T> QCell<T> {
     pub const fn new(owner: &QCellOwner, value: T) -> QCell<T>
 }
-impl<T: Send + Sync> Sync for QCell<T>
+unsafe impl<T: Send + Sync> Sync for QCell<T>
 ```
 
 A new `QCell` needs a reference to a `QCellOwner` when it is created by either `QCellOwner::cell` or `QCell::new`. One ugly part of the API is that the methods to take a reference to the `QCell`, `ro`, and to take a mutable reference, `rw`, live on the `QCellOwner`.
