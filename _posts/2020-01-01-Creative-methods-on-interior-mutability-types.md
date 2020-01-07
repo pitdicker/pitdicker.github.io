@@ -260,7 +260,7 @@ If you have a smart pointer type to inside a `RefCell`, you can take normal refe
 
 `map` was also once implemented for `MutexGuard`, `RwLockReadGuard` and `RwLockWriteGuard`, but [removed](https://github.com/rust-lang/rust/issues/27746#issuecomment-180458770). The problem is the interaction with `Condvar`. Notice that if we would refine the smart pointer with `MutexGuard::map` to only part of the wrapped value, through `Condvar` we would give the other thread also mutable access to _only part of the value_. But the other thread gets access to the _entire_ wrapped value. That can easily lead to things like reading from deallocated memory, as discovered in [this comment](https://github.com/rust-lang/rust/pull/30834#issuecomment-180284290).
 
-The solution is to make `map` return a different type so it can't be used as argument for `Condvar::wait`. `parking_lot` implements this solution, its [`MutexGuard::map`](https://docs.rs/lock_api/0.3/lock_api/struct.MutexGuard.html#method.map) returns a `MappedMutexGuard`. Similarly the `map` methods on [`RwLockWriteGuard`](https://docs.rs/lock_api/0.3/lock_api/struct.RwLockWriteGuard.html), [`RwLockReadGuard`](https://docs.rs/lock_api/0.3/lock_api/struct.RwLockReadGuard.html) and [`ReentrantMutexGuard`](https://docs.rs/lock_api/0.3/lock_api/struct.ReentrantMutexGuard.html) should return another type, because they can also [temporary lend out a mutable reference](#temporary-lending-out-a-mutable-reference-to-another-thread) to the entire value to another thread with `bump`.
+The solution is to make `map` return a different type so it can't be used as argument for `Condvar::wait`. `parking_lot` implements this solution, its [`MutexGuard::map`](https://docs.rs/lock_api/0.3/lock_api/struct.MutexGuard.html#method.map) returns a `MappedMutexGuard`. Similarly the `map` methods on [`RwLockWriteGuard`](https://docs.rs/lock_api/0.3/lock_api/struct.RwLockWriteGuard.html) and [`RwLockReadGuard`](https://docs.rs/lock_api/0.3/lock_api/struct.RwLockReadGuard.html) should return another type, because they can also [temporary lend out a mutable reference](#temporary-lending-out-a-mutable-reference-to-another-thread) to the entire value to another thread with `bump`.
 
 ### `RefMut::map_split`
 While `Ref::map` is nice, `RefMut::map_split` is where it gets really interesting in my opinion. It allows you to refine a smart pointer to _two_ parts of the wrapped value. This is the only way to get more than one mutable reference to inside the `RefCell`.
@@ -279,6 +279,11 @@ It was at some time available inside the standard library as the unstable method
 Both `parking_lot` and `shared_mutex` return `Mapped*` types from their map methods. `shared_mutex` has a potentially useful method: it can [`recover`](https://docs.rs/shared-mutex/0.3/shared_mutex/struct.MappedSharedMutexReadGuard.html#method.recover) a reference to the entire value from a mapped reference, without releasing the lock, if you can also provide a reference to the mutex / RW lock.
 
 It is worth noting that a library can't provide both `split_mut` and `recover` on a mutable (mapped) smart pointer. `split_mut` would allow multiple mutable references to exist, pointing to different parts of the value. Recovering from one a mutable reference to the entire value would alias the other ones.
+
+### `map` and reentrant mutexes
+`parking_lot` provides a `map` and `try_map` method on its [`ReentrantMutexGuard`](https://docs.rs/lock_api/0.3/lock_api/struct.ReentrantMutexGuard.html). A reentrant mutex can't hand out mutable references, so must be used in combination with single-treaded interior mutability types. But with a shared reference in `ReentrantMutexGuard::map` you can't descend into such a type, so map is rarely useable in practice.
+
+The upside is that `ReentrantMutexGuard::map` does not need to return a `MappedReentrantMutexGuard` type (although `parking_lot` currently does). Because `ReentrantMutex` doesn't hand out mutable references, it doesn't have the problem that `Mutex` and `RwLock` have where a mapped smart pointer can be invalidated when [temporary lending out a mutable reference to another thread](#temporary-lending-out-a-mutable-reference-to-another-thread).
 
 ## Downgrading or upgrading a smart pointer
 Basic API:
@@ -388,6 +393,7 @@ I can't think of any other directions, but I am sure this list will grow outdate
 Do you know of any other creative methods on interior mutability types?
 
 ### Revision history
+- 2020-01-07: added note about '`map` and reentrant mutexes'
 - 2020-01-07: added 'Scopes instead of smart pointers'
 - 2020-01-04: added `Ref::try_map` and `MappedRef::recover`
 - 2020-01-04: added `Ref::upgrade`
