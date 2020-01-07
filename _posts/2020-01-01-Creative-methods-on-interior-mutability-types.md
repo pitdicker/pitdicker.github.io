@@ -19,6 +19,7 @@ On container types:
 | `swap`              | yes     | yes      | yes          | yes        | —       | —        | —          | —       | —       | —
 | `update`            | yes     | —        | —            | yes        | —       | —        | —          | —*      | —*      | —*
 | `as_slice_of_cells` | yes     | —        | —            | —          | —       | —        | —          | —       | yes*    | yes*
+| `with`              | —       | —        | —            | —          | maybe   | maybe    | —          | —       | —       | —
 
 On smart pointers:
 
@@ -39,7 +40,7 @@ _*: possible, but not implemented (or not implemented in the standard library or
 
 <!--more-->
 
-We could place these methods in 8 categories:
+We could place these methods in 9 categories:
 - [Bypass conventions if you have exclusive access](#bypass-conventions-if-you-have-exclusive-access)
 - [Temporary wrap a value to provide interior mutability](#temporary-wrap-a-value-to-provide-interior-mutability)
 - [`mem::replace`, but for interior mutability](#memreplace-but-for-interior-mutability)
@@ -48,6 +49,7 @@ We could place these methods in 8 categories:
 - [Temporary lending out a mutable reference to another thread](#temporary-lending-out-a-mutable-reference-to-another-thread)
 - [Refining smart pointers](#refining-smart-pointers)
 - [Downgrading or upgrading a smart pointer](#downgrading-or-upgrading-a-smart-pointer)
+- [Scopes instead of smart pointers](#scopes-instead-of-smart-pointers)
 
 ## Bypass conventions if you have exclusive access
 
@@ -345,6 +347,38 @@ In the part on [condition variables](#condition-variables) we have seen waiting 
 
 The [`SharedMutex`](https://docs.rs/shared-mutex/0.3/shared_mutex/struct.SharedMutex.html) RW lock implementation provides such combinations. `SharedMutexReadGuard::wait_for_write` will upgrade the lock after waiting, and `SharedMutexWriteGuard::wait_for_read` will downgrade it.
 
+## Scopes instead of smart pointers
+
+Smart pointers are not the only way to keep track of the number of references/locks handed out. So can scopes: methods that provide a closure with a reference, and do the bookkeeping before and after running the closure.
+
+For `RefCell` it doesn't make any sense to use it with a closure to provide scoped access to the interior: its whole point is to be used in cases where the regular scope-based 'inherited mutability' doesn't work out. For `OnceCell`, `QCell`, `TCell` and `LCell` it also doesn't offer a real advantage, they can already hand out plain references.
+
+Just like it is not sound to hand out smart pointers to a `Cell`, it is not sound to hand out references to its interior when inside a closure. A scope can keep track of how long the reference is alive, but nothing else. It doesn't prevent another reference to the `Cell` to be used inside the closure, resulting in a shared reference being able to observe a mutation.
+
+But for synchronization primitives you typically want to keep the structure regarding mutability within a thread clear, dealing with concurrency is already hard enough. So here scope-based methods can be a good alternative, and scopes make it easier to control the lifetime of a lock than smart pointers.
+
+Basic API, from [a PR](https://github.com/rust-lang/rust/pull/61976) attempting to add such methods to `Mutex` and `RwLock` in the standard library:
+
+```rust
+impl<T: ?Sized> Mutex<T> {
+    fn with<U, F>(&self, f: F) -> U
+        where F: FnOnce(&mut T) -> U
+}
+
+impl<T: ?Sized> RwLock<T> {
+    fn with_read<U, F>(&self, func: F) -> U
+        where F: FnOnce(&T) -> U
+    fn with_write<U, F>(&self, func: F) -> U
+        where F: FnOnce(&mut T) -> U
+}
+```
+
+One issue that conplicated things is that `Mutex` and `RwLock` have a feature: if one thread holding a lock panics, it will poison the mutex / RW lock, signalling the contents are probably in an inconsistent state. To force you to check for this scenario, every time you acquire a lock it doesn't just return a `MutexGuard<T>`, but `LockResult<MutexGuard<T>>` (which is commonly just unwrapped).
+
+Because it is somewhat up for discussion how much value the ability to handle poisoned locks really has, compared to just panicking, and how to translate that into an API for working with scopes, the [PR was closed](https://github.com/rust-lang/rust/pull/61976#issuecomment-518337204).
+
+For `Mutex` and `RwLock` in `parking_lot`, which don't support poisoning, I think a method like `with` can be a nice addition.
+
 ## Any other creativity?
 
 Appearently rustaceans really like to push the boundaries, to explore the limits of what keeps these interior mutability conventions sound.
@@ -354,6 +388,7 @@ I can't think of any other directions, but I am sure this list will grow outdate
 Do you know of any other creative methods on interior mutability types?
 
 ### Revision history
+- 2020-01-07: added 'Scopes instead of smart pointers'
 - 2020-01-04: added `Ref::try_map` and `MappedRef::recover`
 - 2020-01-04: added `Ref::upgrade`
 - 2020-01-03: added 'Temporary lending out a mutable reference to another thread'
