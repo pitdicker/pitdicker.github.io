@@ -13,7 +13,7 @@ On container types:
 |---------------------|---------|----------|--------------|------------|---------|----------|------------|---------|---------|--------
 | `into_inner`        | yes     | yes      | yes          | yes        | yes     | yes      | yes        | yes*    | yes*    | yes*
 | `get_mut`           | yes     | —        | yes*         | yes        | yes     | yes      | yes        | yes*    | yes*    | yes*
-| `as_ptr`            | yes     | yes      | yes          | yes        | yes     | yes      | yes        | yes     | yes     | yes
+| `as_ptr`            | yes     | yes      | yes          | yes        | yes     | yes      | yes*       | yes     | yes     | yes
 | `from_mut`          | yes     | —        | yes*         | (`BoCell`) | —       | —        | —          | —       | yes*    | yes*
 | `replace`           | yes     | yes      | yes          | yes        | —       | —        | —          | yes*    | yes*    | yes*
 | `swap`              | yes     | yes      | yes          | yes        | —       | —        | —          | —       | —       | —
